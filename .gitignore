@@ -1,0 +1,26 @@
+# Dependencies
+/node_modules
+
+# Environment variables
+.env
+
+# Build output
+/dist
+
+# Recordings and test files
+recording-*.wav
+tts-*.wav
+tts-*.pcm
+*.raw
+
+# Test directories
+/test-recording-vad
+
+# OS files
+.DS_Store
+Thumbs.db
+nul
+
+# Python bytecode from tower/
+__pycache__/
+*.pyc

@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SamSam</title>
+<!--
+  A stand-in for the ESP32 toy, in a browser. Phone or desktop.
+
+  One tap starts it. The SERVER's VAD decides when you stopped talking, and the
+  page stops streaming when it says so — the same thing that ends a turn on the
+  real toy, so there is nothing to hold and nothing to release.
+
+  Two sockets:
+    /device   binary, both ways. 0x01 start, PCM up, TTS PCM back. This is the
+              toy protocol byte for byte, so it works against the unmodified
+              server.
+    /monitor  read only. Purely so the page can show the transcript and the
+              reply. Without it you are staring at a button with no idea whether
+              anything worked.
+
+  Needs http://localhost or https — getUserMedia refuses on file://.
+-->
+<style>
+  :root{
+    --bg:#0b0b10; --card:#15151d; --line:#24242f; --ink:#f2f2f7;
+    --muted:#9d9daf; --faint:#66667a; --accent:#e5432a; --ok:#46c97a;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.5 -apple-system,BlinkMacSystemFont,system-ui,Segoe UI,sans-serif;
+    display:flex;flex-direction:column;align-items:center;
+    padding:max(20px,env(safe-area-inset-top)) 20px max(20px,env(safe-area-inset-bottom));
+    touch-action:manipulation;
+  }
+  .top{width:100%;max-width:520px;display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .dot{width:8px;height:8px;border-radius:50%;background:#4a4a5c;flex:none}
+  .dot.on{background:var(--ok)}
+  .top small{color:var(--faint);font-size:12px;flex:1}
+  .gear{background:none;border:0;color:var(--faint);font-size:19px;cursor:pointer;padding:4px 8px;line-height:1}
+
+  main{flex:1;width:100%;max-width:520px;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;gap:26px;min-height:0}
+
+  /* One target. Big enough to hit with a thumb without looking. */
+  #talk{
+    width:168px;height:168px;border-radius:50%;border:0;cursor:pointer;flex:none;
+    background:var(--accent);color:#fff;font-size:17px;font-weight:600;
+    display:flex;align-items:center;justify-content:center;text-align:center;padding:0 22px;
+    transition:transform .18s cubic-bezier(.2,.9,.25,1),background .25s,box-shadow .25s;
+    box-shadow:0 10px 40px -12px rgba(229,67,42,.75);
+  }
+  #talk:active{transform:scale(.96)}
+  #talk:disabled{background:#2a2a36;color:var(--faint);box-shadow:none;cursor:default}
+  body[data-state=rec] #talk{background:var(--ok);color:#06210f;box-shadow:0 0 0 0 rgba(70,201,122,.55);animation:pulse 1.6s ease-out infinite}
+  body[data-state=think] #talk{background:#2a2a36;color:var(--muted);box-shadow:none}
+  body[data-state=talk] #talk{background:#3b2a6b;color:#e8e2ff;box-shadow:0 10px 40px -12px rgba(124,77,255,.8)}
+  @keyframes pulse{to{box-shadow:0 0 0 34px rgba(70,201,122,0)}}
+  @media (prefers-reduced-motion:reduce){#talk{animation:none}}
+
+  #state{color:var(--muted);font-size:14px;min-height:20px;text-align:center}
+
+  .modeToggle{
+    background:none;border:1px solid var(--line);color:var(--faint);
+    border-radius:999px;padding:7px 16px;font:inherit;font-size:13px;cursor:pointer;
+    transition:color .2s,border-color .2s,background .2s;
+  }
+  .modeToggle[aria-pressed=true]{background:var(--ok);border-color:var(--ok);color:#06210f;font-weight:600}
+
+  .bars{display:flex;gap:3px;align-items:flex-end;height:26px}
+  .bars i{width:3px;background:var(--ok);border-radius:2px;height:3px;transition:height 70ms linear}
+
+  .said{width:100%;display:flex;flex-direction:column;gap:10px;min-height:0}
+  .bub{padding:12px 15px;border-radius:16px;font-size:15px;line-height:1.45;opacity:0;transition:opacity .3s}
+  .bub.show{opacity:1}
+  .you{background:#1d1d27;color:var(--muted);align-self:flex-end;border-bottom-right-radius:5px;max-width:85%}
+  .sam{background:var(--card);border:1px solid var(--line);align-self:flex-start;border-bottom-left-radius:5px;max-width:92%}
+  .cap{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--accent);margin-top:7px}
+
+  dialog{border:0;border-radius:16px;background:var(--card);color:var(--ink);padding:20px;
+         width:min(92vw,420px);box-shadow:0 30px 80px -20px #000}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+        text-transform:uppercase;color:var(--faint);margin:14px 0 6px}
+  input[type=text]{width:100%;background:#0b0b11;color:var(--ink);border:1px solid var(--line);
+                   border-radius:9px;padding:11px;font:inherit;outline:none}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  dialog button{width:100%;margin-top:18px;padding:12px;border-radius:10px;border:0;
+                background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+  .note{color:var(--faint);font-size:12px;margin-top:8px;line-height:1.45}
+  #log{font-family:var(--mono);font-size:10.5px;color:var(--faint);max-height:120px;
+       overflow-y:auto;white-space:pre-wrap;margin:14px 0 0}
+</style>
+</head>
+<body data-state="idle">
+
+  <div class="top">
+    <span class="dot" id="dot"></span>
+    <small id="conn">connecting…</small>
+    <button class="gear" id="openCfg" aria-label="Settings">⚙</button>
+  </div>
+
+  <main>
+    <button id="talk" disabled>Hold to talk</button>
+    <button id="mode" class="modeToggle" aria-pressed="false">Hands-free</button>
+    <div class="bars" id="bars" aria-hidden="true"></div>
+    <div id="state">connecting to the server</div>
+    <div class="said">
+      <div class="bub you" id="you"></div>
+      <div class="bub sam" id="sam"></div>
+    </div>
+  </main>
+
+  <dialog id="cfg">
+    <label>device socket</label>
+    <input type="text" id="url" spellcheck="false">
+    <label>monitor socket (for the transcript)</label>
+    <input type="text" id="murl" spellcheck="false">
+    <label>send level <span id="gv" style="color:var(--muted)"></span></label>
+    <input type="range" id="gain" min="1" max="100" step="1" value="50">
+    <div class="note">The server multiplies incoming audio 50&times; for the ESP32's quiet mic.
+      This divides by the same amount first. Wrong level still transcribes — just wrongly.</div>
+    <pre id="log"></pre>
+    <button id="closeCfg">Done</button>
+  </dialog>
+
+<script>
+(function(){
+  const $ = id => document.getElementById(id);
+  const SEND_RATE = 44100;   // createWAVBuffer(...,44100,...) and the VAD both assume it
+  const REPLY_RATE = 24000;  // Cartesia output
+  const CHUNK = 4096;
+
+  let dev=null, mon=null, ctx=null, stream=null, proc=null, src=null;
+  let recording=false, playhead=0, autoStop=null;
+  let hands=false, micOpen=false;
+
+  // Derived, not hardcoded, because the two deployments differ in three ways at
+  // once and getting any of them wrong looks like a broken app:
+  //
+  //   deployed  the page is served BY the server, so same origin, no port, and
+  //             wss — a page on https cannot open a ws:// socket at all, the
+  //             browser blocks it as mixed content with no prompt.
+  //   local     the page comes off a static server on another port, so the
+  //             socket needs the backend's own ports spelled out.
+  //
+  // Mobile also needs https for the microphone, so on a phone this only works
+  // when the page is served from the deployed host. That is the same condition,
+  // which is convenient: if the mic works, the sockets are right.
+  const host = location.hostname || 'localhost';
+  const secure = location.protocol === 'https:';
+  const served = secure || location.port === '' || location.port === '8000';
+
+  // Carry SHARED_KEY through from the page's own query string, so
+  // /talk?k=secret produces /device?k=secret. Without this the sockets are
+  // rejected with a 401 the moment the server has a key set, and the page just
+  // says "disconnected" with no clue why. Open /talk with no ?k= when the
+  // server has no key.
+  const key = new URLSearchParams(location.search).get('k');
+  const q = key ? `?k=${encodeURIComponent(key)}` : '';
+
+  $('url').value  = served ? `${secure?'wss':'ws'}://${location.host}/device${q}`  : `ws://${host}:8888/device${q}`;
+  $('murl').value = served ? `${secure?'wss':'ws'}://${location.host}/monitor${q}` : `ws://${host}:8899/monitor${q}`;
+  $('gv').textContent = `÷${$('gain').value}`;
+  $('bars').innerHTML = Array.from({length:9}, () => '<i></i>').join('');
+  const bars = [...$('bars').querySelectorAll('i')];
+
+  const log = m => { const e=$('log'); e.textContent += m+'\n'; e.scrollTop=e.scrollHeight; };
+  const setState = (s, text) => { document.body.dataset.state = s; $('state').textContent = text; };
+
+  function bubble(el, html){ el.innerHTML = html; el.classList.add('show'); }
+
+  // ---- device socket: the toy protocol -----------------------------------
+  function connect(){
+    if (dev) { try{dev.close()}catch(e){} }
+    dev = new WebSocket($('url').value);
+    dev.binaryType = 'arraybuffer';
+    dev.onopen = () => {
+      $('dot').className='dot on'; $('conn').textContent='connected';
+      $('talk').disabled=false; setState('idle','Hold the button and say something');
+      log('device connected');
+    };
+    dev.onclose = () => {
+      $('dot').className='dot'; $('conn').textContent='disconnected — is the server running?';
+      $('talk').disabled=true; stopMic(); setState('idle','disconnected');
+    };
+    dev.onerror = () => { $('conn').textContent='connection failed'; };
+    dev.onmessage = e => {
+      if (typeof e.data !== 'string') { play(e.data); return; }
+
+      /*
+       * Control messages, which the toy also receives and obeys.
+       *
+       *   stop_recording  the VAD closed the turn. Stop sending at once — the
+       *                   reply is about to play out loud, and a mic that keeps
+       *                   streaming hears SamSam and answers itself. server.ts
+       *                   calls this out as CRITICAL for exactly that reason.
+       *   ready           safe to listen again. In hands-free this is what
+       *                   re-arms the next turn; the server does not re-arm on
+       *                   its own, the device has to send 0x01 again.
+       */
+      let m; try { m = JSON.parse(e.data); } catch (err) { return; }
+      log('« ' + m.type);
+      if (m.type === 'stop_recording') pauseStreaming();
+      if (m.type === 'ready' && hands && micOpen) rearm();
+    };
+
+    if (mon) { try{mon.close()}catch(e){} }
+    mon = new WebSocket($('murl').value);
+    mon.onmessage = e => {
+      let ev; try{ ev = JSON.parse(e.data) }catch(err){ return }
+      const t = ev.type;
+      if (t !== 'tts_level') log(t);
+
+      // The server's VAD owns the end of the turn, exactly as it does for the
+      // toy. When it says speech ended, stop streaming — that is what makes
+      // this one tap instead of press-and-hold.
+      if (t === 'vad_speech_end' || t === 'recording_stopped') release();
+      if (t === 'processing_started')   setState('think','Thinking…');
+      if (t === 'transcription_complete') bubble($('you'), esc(ev.transcription || ''));
+      if (t === 'response_generated') {
+        setState('talk','SamSam is talking');
+        bubble($('sam'), esc(ev.response||'') +
+          (ev.caption ? `<div class="cap">TOWER: ${esc(ev.caption)} ${(ev.icons||[]).map(i=>'{'+i+'}').join(' ')}</div>` : ''));
+      }
+      if (t === 'response_complete' || t === 'tts_streaming_complete')
+        setTimeout(()=>{ if(!recording) setState('idle','Hold to go again'); }, 1200);
+      if (t === 'processing_error') setState('idle','Something went wrong — hold to retry');
+    };
+  }
+  const esc = s => String(s).replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));
+
+  // ---- playback -----------------------------------------------------------
+  function play(buf){
+    if (!ctx) return;
+    const pcm = new Int16Array(buf);
+    if (!pcm.length) return;
+    const b = ctx.createBuffer(1, pcm.length, REPLY_RATE);
+    const ch = b.getChannelData(0);
+    for (let i=0;i<pcm.length;i++) ch[i] = pcm[i]/32768;
+    const s = ctx.createBufferSource();
+    s.buffer = b; s.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (playhead < now) playhead = now + 0.05;   // chunks queue back to back or it stutters
+    s.start(playhead);
+    playhead += b.duration;
+  }
+
+  // ---- microphone ---------------------------------------------------------
+  async function startMic(){
+    if (recording || !dev || dev.readyState!==1) return;
+
+    // Created on the tap, because every mobile browser refuses to produce sound
+    // from a context that was not opened inside a user gesture. This is the most
+    // common reason a page like this looks fine and plays nothing.
+    if (!ctx) ctx = new (window.AudioContext||window.webkitAudioContext)();
+    if (ctx.state === 'suspended') await ctx.resume();
+    playhead = 0;
+
+    try{
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio:{channelCount:1, echoCancellation:true, noiseSuppression:false, autoGainControl:false}
+      });
+    }catch(err){ setState('idle','No microphone: '+err.message); return; }
+
+    src = ctx.createMediaStreamSource(stream);
+    proc = ctx.createScriptProcessor(CHUNK,1,1);
+    proc.onaudioprocess = e => {
+      if (!recording || !dev || dev.readyState!==1) return;
+      const inp = e.inputBuffer.getChannelData(0);
+      const ratio = ctx.sampleRate / SEND_RATE;
+      const out = new Int16Array(Math.floor(inp.length/ratio));
+      const div = Number($('gain').value)||1;
+      let peak = 0;
+      for (let i=0;i<out.length;i++){
+        const s = inp[Math.floor(i*ratio)];
+        if (Math.abs(s)>peak) peak = Math.abs(s);
+        out[i] = Math.max(-32768, Math.min(32767, (s/div)*32767));
+      }
+      bars.forEach((b,i)=>{ b.style.height = Math.max(3, peak*26*(1-Math.abs(i-4)/7)) + 'px'; });
+      dev.send(out.buffer);
+    };
+    // Muted sink: a ScriptProcessor only runs when connected, but routing the mic
+    // to the speakers is a feedback loop.
+    const mute = ctx.createGain(); mute.gain.value = 0;
+    src.connect(proc); proc.connect(mute); mute.connect(ctx.destination);
+
+    micOpen = true;
+    recording = true;
+    dev.send(new Uint8Array([1]));
+    $('talk').textContent = hands ? 'Listening' : 'Listening…';
+    setState('rec', hands ? 'Just talk — it hears when you stop' : 'Speaking… let go when done');
+    log('0x01 START');
+
+    // Push-to-talk only. A held button can outlive a dead socket or a wrong
+    // level; hands-free has no stuck state to rescue, it is meant to sit open.
+    clearTimeout(autoStop);
+    if (!hands) {
+      autoStop = setTimeout(()=>{ if(recording){ release(); setState('idle','Heard nothing — try the send level in ⚙'); } }, 20000);
+    }
+  }
+
+  /** Stop sending but keep the mic graph alive, ready for the next turn. */
+  function pauseStreaming(){
+    if (!recording) return;
+    recording = false;
+    clearTimeout(autoStop);
+    bars.forEach(b=>b.style.height='3px');
+    if (hands) { $('talk').textContent = 'Listening'; setState('think','Thinking…'); }
+  }
+
+  /** Hands-free: the server said ready, so open the next turn. */
+  function rearm(){
+    if (!hands || !micOpen || recording || !dev || dev.readyState!==1) return;
+    recording = true;
+    dev.send(new Uint8Array([1]));
+    setState('rec','Just talk — it hears when you stop');
+    log('0x01 START (re-armed)');
+  }
+
+  /** Close the mic entirely and drop the graph. */
+  function closeMic(){
+    micOpen = false; recording = false;
+    clearTimeout(autoStop);
+    if (proc){ proc.onaudioprocess=null; proc.disconnect(); proc=null; }
+    if (src){ src.disconnect(); src=null; }
+    if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    bars.forEach(b=>b.style.height='3px');
+  }
+
+  /**
+   * Let go = end of turn.
+   *
+   * The server ignores the 0x00 release outright — handleButtonStateChange logs
+   * "VAD controls recording duration" and returns — so releasing the button
+   * cannot by itself make it process anything. What DOES end a turn is silence,
+   * because that is what the VAD is listening for. So on release we stop
+   * sending microphone audio and send a short tail of digital silence instead:
+   * the VAD hears the utterance end immediately and closes the turn, which is
+   * the same path the toy takes. No server change, and no waiting for you to
+   * stop breathing.
+   */
+  async function release(){
+    if (!recording) return;
+    // Hands-free never releases: the server's VAD is doing the segmenting, and
+    // cutting the stream underneath it is what this mode exists to avoid.
+    if (hands) return;
+    recording = false;
+    clearTimeout(autoStop);
+
+    closeMic();
+    $('talk').textContent = 'Hold to talk';
+    setState('think','Thinking…');
+
+    // 0.7 s, paced roughly as it would have arrived. Sent faster than real time
+    // the VAD sees it as one burst and is less reliable about closing.
+    const quiet = new Int16Array(CHUNK);
+    for (let i=0;i<8;i++){
+      if (!dev || dev.readyState!==1) break;
+      dev.send(quiet.buffer.slice(0));
+      await new Promise(r=>setTimeout(r, CHUNK/SEND_RATE*1000));
+    }
+    try{ if(dev && dev.readyState===1) dev.send(new Uint8Array([0])); }catch(e){}
+    log('released: silence tail sent, 0x00 STOP');
+  }
+
+  function stopMic(fromServer){
+    if (!recording) return;
+    recording = false;
+    clearTimeout(autoStop);
+    try{ if(dev && dev.readyState===1) dev.send(new Uint8Array([0])); }catch(e){}
+    if (proc){ proc.onaudioprocess=null; proc.disconnect(); proc=null; }
+    if (src){ src.disconnect(); src=null; }
+    if (stream){ stream.getTracks().forEach(t=>t.stop()); stream=null; }
+    bars.forEach(b=>b.style.height='3px');
+    $('talk').textContent = 'Tap to talk';
+    if (!fromServer) setState('idle','Stopped');
+    log('0x00 STOP');
+  }
+
+  // ---- wiring -------------------------------------------------------------
+  // pointerdown covers mouse, touch and pen in one listener, and fires before
+  // the 300 ms click delay some mobile browsers still apply.
+  const btn = $('talk');
+  btn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    // Capture means a finger that slides off the circle mid-sentence still
+    // counts as held; without it the turn ends the moment you move.
+    if (hands) return;   // hands-free owns the mic; the button is inert
+    try { btn.setPointerCapture(e.pointerId); } catch (err) {}
+    startMic();
+  });
+  ['pointerup','pointercancel'].forEach(t =>
+    btn.addEventListener(t, e => { e.preventDefault(); release(); }));
+
+  /*
+   * Hands-free.
+   *
+   * Exactly what the toy does: hold the socket open, stream continuously, and
+   * let the server's Silero VAD decide where each utterance starts and ends.
+   * The loop is stop_recording -> pipeline -> ready -> 0x01 again, and the
+   * server does not re-arm by itself, so `ready` is the cue.
+   *
+   * The catch is acoustic, not technical: with nothing gating the microphone,
+   * a speaker near the phone means SamSam hears his own reply and talks to
+   * himself. stop_recording closes the mic before playback for exactly that
+   * reason, but a loud room can still bleed in. Headphones, or push-to-talk.
+   */
+  const modeBtn = $('mode');
+  modeBtn.addEventListener('click', async () => {
+    hands = !hands;
+    modeBtn.setAttribute('aria-pressed', String(hands));
+    modeBtn.textContent = hands ? 'Hands-free on' : 'Hands-free';
+    $('talk').textContent = hands ? 'Listening' : 'Hold to talk';
+    log(hands ? 'hands-free on' : 'hands-free off');
+    if (hands) {
+      await startMic();
+    } else {
+      closeMic();
+      try{ if(dev && dev.readyState===1) dev.send(new Uint8Array([0])); }catch(e){}
+      setState('idle','Hold the button and say something');
+    }
+  });
+
+  $('openCfg').addEventListener('click', ()=>$('cfg').showModal());
+  $('closeCfg').addEventListener('click', ()=>{ $('cfg').close(); connect(); });
+  $('gain').addEventListener('input', ()=>$('gv').textContent = `÷${$('gain').value}`);
+
+  connect();
+})();
+</script>
+</body>
+</html>

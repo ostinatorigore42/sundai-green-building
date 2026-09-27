@@ -1,0 +1,28 @@
+## Replit entry point.
+##
+## Build then start: the TypeScript has to be compiled and the HTML clients
+## copied into dist/ before node can serve them, and Replit does not run
+## npm scripts on its own.
+##
+## The bridge is NOT started here. server.ts spawns it as a child process when
+## BRIDGE_INSTANCE is set, so there is one thing to run and one thing to stop.
+run = "npm run build && npm start"
+entrypoint = "src/server.ts"
+modules = ["nodejs-20", "python-3.11"]
+
+hidden = [".config", "dist", "node_modules"]
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+# Replit sets PORT itself; server.ts falls back to HTTP_PORT locally.
+PYTHONUNBUFFERED = "1"
+
+[deployment]
+run = ["sh", "-c", "npm run build && npm start"]
+deploymentTarget = "cloudrun"
+
+[[ports]]
+localPort = 8000
+externalPort = 80

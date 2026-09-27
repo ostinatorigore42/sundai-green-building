@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 AI Toy - Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0a0a0a;
+            color: #e0e0e0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 400px;
+            width: 100%;
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            margin-bottom: 30px;
+            color: #fff;
+        }
+        .status-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+        .status-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 8px;
+        }
+        .status-value {
+            font-size: 18px;
+            font-weight: 500;
+        }
+        .connected { color: #4ade80; }
+        .disconnected { color: #ef4444; }
+        .pressed { color: #fbbf24; }
+        .released { color: #64748b; }
+        .dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        .dot.connected { background: #4ade80; }
+        .dot.disconnected { background: #ef4444; }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .pipeline-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            margin: 20px 0;
+            flex-wrap: wrap;
+        }
+        .pipeline-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 15px;
+            border: 2px solid #444;
+            border-radius: 10px;
+            min-width: 80px;
+            background: #1e1e1e;
+            transition: all 0.3s;
+        }
+        .pipeline-step.active {
+            border-color: #4CAF50;
+            background: #2d4a2e;
+            box-shadow: 0 0 10px rgba(76, 175, 80, 0.5);
+        }
+        .pipeline-step.complete {
+            border-color: #2196F3;
+            background: #1e3a5f;
+        }
+        .step-icon {
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+        .step-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 13px;
+        }
+        .step-status {
+            font-size: 11px;
+            color: #888;
+        }
+        .pipeline-arrow {
+            font-size: 20px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>ESP32 AI Toy</h1>
+
+        <div class="status-card">
+            <div class="status-label">Device Status</div>
+            <div class="status-value" id="device-status">
+                <span class="dot disconnected"></span>
+                <span id="device-text">Disconnected</span>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">Recording Status</div>
+            <div class="status-value" id="recording-status">
+                <span id="recording-text">Idle</span>
+            </div>
+            <div id="recording-progress" style="display: none; margin-top: 12px;">
+                <div style="background: #333; height: 4px; border-radius: 2px; overflow: hidden;">
+                    <div id="progress-bar" style="background: #4ade80; height: 100%; width: 0%; transition: width 0.1s linear;"></div>
+                </div>
+                <div style="margin-top: 8px; font-size: 14px; color: #888;">
+                    <span id="countdown-text">0.0s</span><span id="recording-mode-indicator"> (VAD-controlled)</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">AI Pipeline Status</div>
+            <div class="pipeline-container">
+                <div class="pipeline-step" id="step-vad">
+                    <div class="step-icon">🎤</div>
+                    <div class="step-name">VAD</div>
+                    <div class="step-status" id="status-vad">Idle</div>
+                </div>
+                <div class="pipeline-arrow">→</div>
+                <div class="pipeline-step" id="step-whisper">
+                    <div class="step-icon">🎧</div>
+                    <div class="step-name">Whisper</div>
+                    <div class="step-status" id="status-whisper">Idle</div>
+                </div>
+                <div class="pipeline-arrow">→</div>
+                <div class="pipeline-step" id="step-gpt4">
+                    <div class="step-icon">🧠</div>
+                    <div class="step-name">GPT-4</div>
+                    <div class="step-status" id="status-gpt4">Idle</div>
+                </div>
+                <div class="pipeline-arrow">→</div>
+                <div class="pipeline-step" id="step-tts">
+                    <div class="step-icon">🔊</div>
+                    <div class="step-name">TTS</div>
+                    <div class="step-status" id="status-tts">Idle</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">Latest Transcription</div>
+            <div style="font-size: 14px;">
+                <div id="transcript-container" style="margin-bottom: 12px;">
+                    <div style="color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Input:</div>
+                    <div id="transcript-text" style="color: #e0e0e0; font-style: italic; min-height: 40px; padding: 8px; background: #1a1a1a; border-radius: 4px; border: 1px solid #2a2a2a;">
+                        No transcript yet
+                    </div>
+                </div>
+                <div id="response-container">
+                    <div style="color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">Response:</div>
+                    <div id="response-text" style="color: #4ade80; font-style: italic; min-height: 40px; padding: 8px; background: #1a1a1a; border-radius: 4px; border: 1px solid #2a2a2a;">
+                        No response yet
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">VAD Status</div>
+            <div style="font-size: 14px;">
+                <div style="margin-bottom: 10px;">
+                    <span style="color: #888;">Mode:</span>
+                    <span style="color: #e0e0e0; margin-left: 8px;" id="vad-mode">Unknown</span>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <span style="color: #888;">State:</span>
+                    <span style="margin-left: 8px;" id="vad-state">Idle</span>
+                </div>
+                <div style="margin-bottom: 10px; font-size: 12px; color: #666;">
+                    <div>Threshold: <span style="color: #888;" id="vad-threshold">0.8 / 0.5</span></div>
+                    <div>Silence: <span style="color: #888;" id="vad-redemption">720ms</span></div>
+                </div>
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2a2a2a;">
+                    <div style="font-size: 11px; color: #666; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px;">Recent Events</div>
+                    <div id="vad-events" style="font-size: 12px; max-height: 120px; overflow-y: auto; color: #888;">
+                        <div style="color: #555; padding: 4px 0;">No events yet</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">Audio Statistics</div>
+            <div style="font-size: 14px; color: #888;">
+                <div style="margin-bottom: 6px;">Input: <span style="color: #e0e0e0;" id="stat-input-bytes">0</span> bytes</div>
+                <div style="margin-bottom: 6px;">Response: <span style="color: #e0e0e0;" id="stat-response-bytes">0</span> bytes</div>
+                <div>Conversations: <span style="color: #e0e0e0;" id="stat-conversations">0</span></div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">Recent Conversations</div>
+            <div id="conversation-history" style="font-size: 13px; color: #888; max-height: 300px; overflow-y: auto;">
+                <div style="color: #555; padding: 10px 0;">No conversations yet</div>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <div class="status-label">Monitor WebSocket</div>
+            <div class="status-value" id="monitor-status">
+                <span class="dot disconnected"></span>
+                <span id="monitor-text">Connecting...</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const ws = new WebSocket('ws://' + window.location.hostname + ':8899/monitor');
+
+        let deviceConnected = false;
+        let recordingState = 'idle'; // 'idle', 'recording', 'processing', 'playing'
+        let recordingStartTime = 0;
+        let countdownInterval = null;
+
+        ws.onopen = () => {
+            updateMonitorStatus(true);
+            // Request current stats on connect
+            ws.send(JSON.stringify({ type: 'request_stats' }));
+        };
+
+        ws.onclose = () => {
+            updateMonitorStatus(false);
+            setTimeout(() => window.location.reload(), 3000);
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+
+                if (data.type === 'device_connected') {
+                    deviceConnected = true;
+                    updateDeviceStatus(true);
+                }
+
+                if (data.type === 'device_disconnected') {
+                    deviceConnected = false;
+                    updateDeviceStatus(false);
+                }
+
+                if (data.type === 'recording_started') {
+                    recordingState = 'recording';
+                    recordingStartTime = Date.now();
+                    updateRecordingStatus('recording');
+                    startCountdown();
+                    setStepStatus('vad', 'active', 'Recording');
+                }
+
+                if (data.type === 'recording_stopped') {
+                    recordingState = 'processing';
+                    updateRecordingStatus('processing');
+                    stopCountdown();
+                }
+
+                if (data.type === 'response_started') {
+                    recordingState = 'playing';
+                    updateRecordingStatus('playing');
+                }
+
+                if (data.type === 'response_complete') {
+                    recordingState = 'idle';
+                    updateRecordingStatus('idle');
+                }
+
+                if (data.type === 'audio_stats') {
+                    updateAudioStats(data);
+                }
+
+                if (data.type === 'conversation_added') {
+                    addConversationToHistory(data.conversation);
+                }
+
+                if (data.type === 'stats_snapshot') {
+                    updateAudioStats(data.stats);
+                    updateConversationHistory(data.conversations);
+                }
+
+                // VAD events
+                if (data.type === 'vad_config') {
+                    updateVADConfig(data);
+                }
+
+                if (data.type === 'vad_speech_start') {
+                    updateVADState('speech', data);
+                    addVADEvent('Speech START', '#4ade80', data.threshold);
+                    setStepStatus('vad', 'active', 'Speech detected');
+                }
+
+                if (data.type === 'vad_speech_end') {
+                    updateVADState('silence', data);
+                    addVADEvent('Speech END', '#fbbf24', data.duration);
+                }
+
+                if (data.type === 'vad_misfire') {
+                    addVADEvent('Misfire (false positive)', '#ef4444');
+                }
+
+                if (data.type === 'vad_real_start') {
+                    addVADEvent('Speech confirmed', '#4ade80');
+                }
+
+                if (data.type === 'vad_timeout') {
+                    updateVADState('timeout', data);
+                    addVADEvent('Timeout (30s limit)', '#ef4444');
+                }
+
+                // Transcription events
+                if (data.type === 'transcription') {
+                    updateTranscript(data.transcript, data.responseText);
+                }
+
+                // New pipeline events
+                if (data.type === 'processing_started') {
+                    setStepStatus('whisper', 'active', 'Transcribing...');
+                }
+
+                if (data.type === 'transcription_complete') {
+                    setStepStatus('whisper', 'complete', 'Done');
+                    setStepStatus('gpt4', 'active', 'Thinking...');
+                    updateTranscript(data.transcription, '');
+                }
+
+                if (data.type === 'response_generated') {
+                    setStepStatus('gpt4', 'complete', 'Done');
+                    setStepStatus('tts', 'active', 'Generating...');
+                    document.getElementById('response-text').textContent = data.response;
+                }
+
+                if (data.type === 'tts_streaming_started') {
+                    setStepStatus('tts', 'active', 'Streaming...');
+                }
+
+                if (data.type === 'tts_streaming_complete') {
+                    setStepStatus('tts', 'complete', 'Done');
+                    setTimeout(resetPipeline, 2000);
+                }
+
+                if (data.type === 'processing_error') {
+                    ['whisper', 'gpt4', 'tts'].forEach(s => setStepStatus(s, 'idle', 'Error'));
+                }
+
+                if (data.type === 'stop_recording') {
+                    setStepStatus('vad', 'complete', `Done (${data.reason})`);
+                }
+            } catch (e) {
+                // Not JSON, ignore
+            }
+        };
+
+        function updateMonitorStatus(connected) {
+            const statusEl = document.getElementById('monitor-status');
+            const textEl = document.getElementById('monitor-text');
+            const dot = statusEl.querySelector('.dot');
+
+            if (connected) {
+                dot.className = 'dot connected';
+                textEl.textContent = 'Connected';
+                statusEl.className = 'status-value connected';
+            } else {
+                dot.className = 'dot disconnected';
+                textEl.textContent = 'Disconnected';
+                statusEl.className = 'status-value disconnected';
+            }
+        }
+
+        function updateDeviceStatus(connected) {
+            const statusEl = document.getElementById('device-status');
+            const textEl = document.getElementById('device-text');
+            const dot = statusEl.querySelector('.dot');
+
+            if (connected) {
+                dot.className = 'dot connected';
+                textEl.textContent = 'Connected';
+            } else {
+                dot.className = 'dot disconnected';
+                textEl.textContent = 'Disconnected';
+            }
+        }
+
+        function updateRecordingStatus(state) {
+            const textEl = document.getElementById('recording-text');
+            const progressDiv = document.getElementById('recording-progress');
+
+            const stateText = {
+                'idle': 'Idle',
+                'recording': 'Recording...',
+                'processing': 'Processing with OpenAI...',
+                'playing': 'Playing response'
+            };
+
+            const stateColors = {
+                'idle': '#64748b',
+                'recording': '#ef4444',
+                'processing': '#fbbf24',
+                'playing': '#4ade80'
+            };
+
+            textEl.textContent = stateText[state] || 'Unknown';
+            textEl.style.color = stateColors[state] || '#888';
+
+            if (state === 'recording') {
+                progressDiv.style.display = 'block';
+            } else {
+                progressDiv.style.display = 'none';
+            }
+        }
+
+        function startCountdown() {
+            if (countdownInterval) clearInterval(countdownInterval);
+
+            countdownInterval = setInterval(() => {
+                const elapsed = (Date.now() - recordingStartTime) / 1000;
+
+                // For VAD mode: show elapsed time with animated progress
+                // Progress bar just pulses to show activity (no fixed duration)
+                const progress = ((elapsed * 100) % 100);  // Continuous animation
+
+                document.getElementById('countdown-text').textContent = elapsed.toFixed(1) + 's';
+                document.getElementById('progress-bar').style.width = Math.min(100, (elapsed / 30) * 100) + '%'; // 30s max
+
+            }, 100);
+        }
+
+        function stopCountdown() {
+            if (countdownInterval) {
+                clearInterval(countdownInterval);
+                countdownInterval = null;
+            }
+        }
+
+        function updateAudioStats(stats) {
+            if (stats.inputBytes !== undefined) {
+                document.getElementById('stat-input-bytes').textContent = formatBytes(stats.inputBytes);
+            }
+            if (stats.responseBytes !== undefined) {
+                document.getElementById('stat-response-bytes').textContent = formatBytes(stats.responseBytes);
+            }
+            if (stats.conversationCount !== undefined) {
+                document.getElementById('stat-conversations').textContent = stats.conversationCount;
+            }
+        }
+
+        function updateConversationHistory(conversations) {
+            const historyEl = document.getElementById('conversation-history');
+            if (!conversations || conversations.length === 0) {
+                historyEl.innerHTML = '<div style="color: #555; padding: 10px 0;">No conversations yet</div>';
+                return;
+            }
+
+            historyEl.innerHTML = conversations.slice(-10).reverse().map(conv => `
+                <div style="padding: 10px 0; border-bottom: 1px solid #2a2a2a;">
+                    <div style="color: #e0e0e0; margin-bottom: 4px;">${formatTimestamp(conv.timestamp)}</div>
+                    <div style="font-size: 12px;">
+                        ${conv.inputFile ? `<a href="${conv.inputFile}" style="color: #4ade80; text-decoration: none; margin-right: 10px;">▶ Input</a>` : ''}
+                        ${conv.responseFile ? `<a href="${conv.responseFile}" style="color: #fbbf24; text-decoration: none;">▶ Response</a>` : ''}
+                    </div>
+                    ${conv.transcript ? `<div style="font-size: 12px; color: #888; margin-top: 4px; font-style: italic;">"${conv.transcript}"</div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function addConversationToHistory(conversation) {
+            // For now, just request full stats refresh
+            ws.send(JSON.stringify({ type: 'request_stats' }));
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            if (bytes < 1024) return bytes + ' B';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+        }
+
+        function formatTimestamp(timestamp) {
+            const date = new Date(timestamp);
+            const now = new Date();
+            const isToday = date.toDateString() === now.toDateString();
+
+            if (isToday) {
+                return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            } else {
+                return date.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+            }
+        }
+
+        // VAD display functions
+        function updateVADConfig(config) {
+            document.getElementById('vad-mode').textContent = config.mode || 'Unknown';
+            document.getElementById('vad-mode').style.color = config.mode === 'silero-vad' ? '#4ade80' : '#fbbf24';
+
+            if (config.positiveThreshold && config.negativeThreshold) {
+                document.getElementById('vad-threshold').textContent =
+                    `${config.positiveThreshold} / ${config.negativeThreshold}`;
+            }
+
+            if (config.redemptionMs) {
+                document.getElementById('vad-redemption').textContent = `${config.redemptionMs}ms`;
+            }
+        }
+
+        function updateVADState(state, data) {
+            const stateEl = document.getElementById('vad-state');
+
+            const stateText = {
+                'idle': 'Idle',
+                'speech': 'Speech Detected',
+                'silence': 'Silence (waiting)',
+                'timeout': 'Timeout'
+            };
+
+            const stateColors = {
+                'idle': '#64748b',
+                'speech': '#4ade80',
+                'silence': '#fbbf24',
+                'timeout': '#ef4444'
+            };
+
+            stateEl.textContent = stateText[state] || 'Unknown';
+            stateEl.style.color = stateColors[state] || '#888';
+        }
+
+        let vadEventCount = 0;
+        const MAX_VAD_EVENTS = 20;
+
+        function addVADEvent(message, color, detail) {
+            const eventsEl = document.getElementById('vad-events');
+
+            // Clear "No events yet" message on first event
+            if (vadEventCount === 0) {
+                eventsEl.innerHTML = '';
+            }
+
+            const timestamp = new Date().toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                fractionalSecondDigits: 1
+            });
+
+            const detailText = detail ? ` (${typeof detail === 'number' ? detail.toFixed(2) : detail})` : '';
+
+            const eventDiv = document.createElement('div');
+            eventDiv.style.cssText = 'padding: 4px 0; border-bottom: 1px solid #2a2a2a;';
+            eventDiv.innerHTML = `
+                <span style="color: #555;">${timestamp}</span>
+                <span style="color: ${color}; margin-left: 8px;">${message}</span>
+                <span style="color: #666;">${detailText}</span>
+            `;
+
+            eventsEl.insertBefore(eventDiv, eventsEl.firstChild);
+            vadEventCount++;
+
+            // Limit number of displayed events
+            while (eventsEl.children.length > MAX_VAD_EVENTS) {
+                eventsEl.removeChild(eventsEl.lastChild);
+                vadEventCount--;
+            }
+        }
+
+        function updateTranscript(transcript, responseText) {
+            document.getElementById('transcript-text').textContent = transcript || 'No speech detected';
+            document.getElementById('response-text').textContent = responseText || '(audio-only response)';
+
+            // Highlight if transcript exists
+            const transcriptEl = document.getElementById('transcript-text');
+            transcriptEl.style.color = transcript ? '#4ade80' : '#666';
+        }
+
+        // Pipeline visualization functions
+        function setStepStatus(step, state, statusText) {
+            const stepEl = document.getElementById(`step-${step}`);
+            const statusEl = document.getElementById(`status-${step}`);
+
+            if (!stepEl || !statusEl) return;
+
+            stepEl.classList.remove('active', 'complete');
+            if (state === 'active') stepEl.classList.add('active');
+            if (state === 'complete') stepEl.classList.add('complete');
+
+            statusEl.textContent = statusText;
+        }
+
+        function resetPipeline() {
+            ['vad', 'whisper', 'gpt4', 'tts'].forEach(step => {
+                setStepStatus(step, 'idle', 'Idle');
+            });
+        }
+    </script>
+</body>
+</html>
